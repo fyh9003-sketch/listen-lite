@@ -1,0 +1,438 @@
+name: Build Listen Lite APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create Android project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/example/listenlite
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "ListenLite"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.13.0' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.listenlite'
+              compileSdk 36
+
+              defaultConfig {
+                  applicationId 'com.example.listenlite'
+                  minSdk 26
+                  targetSdk 36
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#6750A4</item>
+                  <item name="android:navigationBarColor">#FFFFFF</item>
+                  <item name="android:statusBarColor">#FFFFFF</item>
+                  <item name="android:windowLightStatusBar">true</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="Listen Lite"
+                  android:allowBackup="true"
+                  android:supportsRtl="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/example/listenlite/MainActivity.java <<'EOF'
+          package com.example.listenlite;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.os.Build;
+          import android.provider.MediaStore;
+          import android.content.pm.PackageManager;
+          import android.database.Cursor;
+          import android.media.MediaPlayer;
+          import android.net.Uri;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.*;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class MainActivity extends Activity {
+
+              LinearLayout list;
+              EditText search;
+              TextView now;
+              MediaPlayer player;
+              ArrayList<Song> songs = new ArrayList<>();
+              int current = -1;
+
+              static class Song {
+                  String title;
+                  String artist;
+                  Uri uri;
+
+                  Song(String t, String a, Uri u) {
+                      title = t;
+                      artist = a;
+                      uri = u;
+                  }
+              }
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(24, 30, 24, 20);
+
+                  TextView title = new TextView(this);
+                  title.setText("Listen Lite");
+                  title.setTextSize(28);
+                  title.setGravity(Gravity.CENTER_VERTICAL);
+                  title.setPadding(0, 0, 0, 18);
+                  root.addView(title);
+
+                  search = new EditText(this);
+                  search.setHint("搜索歌曲或歌手");
+                  search.setSingleLine(true);
+                  root.addView(search);
+
+                  LinearLayout buttons = new LinearLayout(this);
+                  buttons.setGravity(Gravity.CENTER);
+
+                  Button prev = new Button(this);
+                  prev.setText("上一首");
+
+                  Button play = new Button(this);
+                  play.setText("播放 / 暂停");
+
+                  Button next = new Button(this);
+                  next.setText("下一首");
+
+                  buttons.addView(prev);
+                  buttons.addView(play);
+                  buttons.addView(next);
+                  root.addView(buttons);
+
+                  now = new TextView(this);
+                  now.setText("请选择歌曲");
+                  now.setTextSize(16);
+                  now.setPadding(8, 15, 8, 15);
+                  root.addView(now);
+
+                  ScrollView scroll = new ScrollView(this);
+                  list = new LinearLayout(this);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  scroll.addView(list);
+                  root.addView(scroll, new LinearLayout.LayoutParams(
+                          -1, 0, 1
+                  ));
+
+                  setContentView(root);
+
+                  search.setOnEditorActionListener((v, actionId, event) -> {
+                      filter();
+                      return false;
+                  });
+
+                  search.setOnKeyListener((v, keyCode, event) -> {
+                      filter();
+                      return false;
+                  });
+
+                  play.setOnClickListener(v -> toggle());
+                  prev.setOnClickListener(v -> previous());
+                  next.setOnClickListener(v -> next());
+
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(
+                              new String[]{Manifest.permission.READ_MEDIA_AUDIO},
+                              10
+                      );
+                  } else if (Build.VERSION.SDK_INT >= 23) {
+                      requestPermissions(
+                              new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
+                              10
+                      );
+                  } else {
+                      loadSongs();
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(
+                      int requestCode,
+                      String[] permissions,
+                      int[] results) {
+                  super.onRequestPermissionsResult(requestCode, permissions, results);
+
+                  if (requestCode == 10) {
+                      loadSongs();
+                  }
+              }
+
+              void loadSongs() {
+                  songs.clear();
+
+                  String[] projection = {
+                          MediaStore.Audio.Media._ID,
+                          MediaStore.Audio.Media.TITLE,
+                          MediaStore.Audio.Media.ARTIST
+                  };
+
+                  Cursor c = getContentResolver().query(
+                          MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                          projection,
+                          MediaStore.Audio.Media.IS_MUSIC + "!=0",
+                          null,
+                          MediaStore.Audio.Media.TITLE + " ASC"
+                  );
+
+                  if (c != null) {
+                      int idCol = c.getColumnIndexOrThrow(
+                              MediaStore.Audio.Media._ID
+                      );
+
+                      int titleCol = c.getColumnIndexOrThrow(
+                              MediaStore.Audio.Media.TITLE
+                      );
+
+                      int artistCol = c.getColumnIndexOrThrow(
+                              MediaStore.Audio.Media.ARTIST
+                      );
+
+                      while (c.moveToNext()) {
+                          long id = c.getLong(idCol);
+                          String t = c.getString(titleCol);
+                          String a = c.getString(artistCol);
+
+                          Uri uri = Uri.withAppendedPath(
+                                  MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                                  String.valueOf(id)
+                          );
+
+                          songs.add(new Song(t, a, uri));
+                      }
+
+                      c.close();
+                  }
+
+                  showSongs(songs);
+              }
+
+              void showSongs(List<Song> data) {
+                  list.removeAllViews();
+
+                  if (data.isEmpty()) {
+                      TextView empty = new TextView(this);
+                      empty.setText("没有找到本地音乐");
+                      empty.setTextSize(18);
+                      empty.setPadding(10, 30, 10, 30);
+                      list.addView(empty);
+                      return;
+                  }
+
+                  for (int i = 0; i < data.size(); i++) {
+                      final int index = songs.indexOf(data.get(i));
+
+                      TextView item = new TextView(this);
+                      item.setText(data.get(i).title + "\n" + data.get(i).artist);
+                      item.setTextSize(17);
+                      item.setPadding(15, 22, 15, 22);
+
+                      item.setOnClickListener(v -> playSong(index));
+
+                      list.addView(item);
+                  }
+              }
+
+              void filter() {
+                  String q = search.getText().toString().trim().toLowerCase();
+
+                  if (q.isEmpty()) {
+                      showSongs(songs);
+                      return;
+                  }
+
+                  ArrayList<Song> result = new ArrayList<>();
+
+                  for (Song s : songs) {
+                      if (s.title.toLowerCase().contains(q)
+                              || s.artist.toLowerCase().contains(q)) {
+                          result.add(s);
+                      }
+                  }
+
+                  showSongs(result);
+              }
+
+              void playSong(int index) {
+                  if (index < 0 || index >= songs.size()) return;
+
+                  try {
+                      if (player != null) {
+                          player.release();
+                      }
+
+                      player = MediaPlayer.create(this, songs.get(index).uri);
+
+                      if (player == null) {
+                          now.setText("无法播放这首歌");
+                          return;
+                      }
+
+                      current = index;
+
+                      now.setText(
+                              "正在播放："
+                                      + songs.get(index).title
+                                      + "\n"
+                                      + songs.get(index).artist
+                      );
+
+                      player.setOnCompletionListener(mp -> next());
+                      player.start();
+
+                  } catch (Exception e) {
+                      now.setText("播放失败");
+                  }
+              }
+
+              void toggle() {
+                  if (player == null) {
+                      if (!songs.isEmpty()) {
+                          playSong(0);
+                      }
+                      return;
+                  }
+
+                  if (player.isPlaying()) {
+                      player.pause();
+                  } else {
+                      player.start();
+                  }
+              }
+
+              void previous() {
+                  if (songs.isEmpty()) return;
+
+                  int i = current - 1;
+
+                  if (i < 0) {
+                      i = songs.size() - 1;
+                  }
+
+                  playSong(i);
+              }
+
+              void next() {
+                  if (songs.isEmpty()) return;
+
+                  int i = current + 1;
+
+                  if (i >= songs.size()) {
+                      i = 0;
+                  }
+
+                  playSong(i);
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (player != null) {
+                      player.release();
+                      player = null;
+                  }
+
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: listen-lite-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
